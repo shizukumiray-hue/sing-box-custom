@@ -25,6 +25,7 @@ on:
 
 env:
   GO_VERSION: ${{ inputs.go_version || '1.26.0' }}
+  NDK_VERSION: '28.0.13004108'
 
 jobs:
   build:
@@ -48,6 +49,23 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      
+      - name: Setup Android NDK
+        run: |
+          echo "Installing Android NDK ${{ env.NDK_VERSION }}..."
+          
+          # Install via sdkmanager
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;${{ env.NDK_VERSION }}" \
+            "cmake;3.22.1" \
+            "build-tools;37.0.1" \
+            "platforms;android-37"
+          
+          # Set environment
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+          
+          # Verify installation
+          ls -la ${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}
       
       - name: Setup Gomobile
         run: |

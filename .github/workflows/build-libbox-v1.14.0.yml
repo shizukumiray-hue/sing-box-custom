@@ -1,0 +1,78 @@
+name: Build libbox.aar v1.14.0 with SSH WS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-libbox:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout sing-box custom v1.14.0
+        uses: actions/checkout@v4
+        with:
+          ref: custom-v1.14.0
+          fetch-depth: 0
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Setup Android NDK
+        run: |
+          echo "y" | sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "ANDROID_NDK=${ANDROID_HOME}/ndk/26.1.10909125" >> $GITHUB_ENV
+      
+      - name: Install gomobile
+        run: |
+          go install github.com/sagernet/gomobile/cmd/gomobile@v0.1.4
+          go install github.com/sagernet/gomobile/cmd/gobind@v0.1.4
+      
+      - name: Build libbox.aar
+        run: |
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          
+          gomobile init
+          
+          go get -v github.com/sagernet/sing-box/experimental/libbox
+          
+          cd experimental/libbox
+          
+          gomobile bind -v \
+            -androidapi 21 \
+            -javapkg=io.nekohasekai \
+            -libname=box \
+            -tags "with_gvisor,with_quic,with_wireguard,with_ech,with_utls,with_clash_api" \
+            -trimpath \
+            -ldflags="-s -w -buildid=" \
+            . || exit 1
+          
+          ls -lh libbox.aar
+          mkdir -p ../../output
+          cp libbox.aar ../../output/
+      
+      - name: Get version info
+        id: version
+        run: |
+          VERSION="v1.14.0-custom-$(git rev-parse --short HEAD)"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: Upload libbox.aar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbox-aar-${{ steps.version.outputs.version }}
+          path: output/libbox.aar
+          retention-days: 30

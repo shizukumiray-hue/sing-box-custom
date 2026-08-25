@@ -86,8 +86,8 @@ jobs:
           go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
           go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
           
-          echo "Initializing gomobile with NDK r28..."
-          gomobile init -ndk ${ANDROID_NDK_HOME}
+          echo "Initializing gomobile..."
+          gomobile init
           
           echo "Verifying gomobile installation..."
           gomobile version || echo "gomobile version command not available"

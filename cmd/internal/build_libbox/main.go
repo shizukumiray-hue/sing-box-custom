@@ -126,7 +126,6 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 		"-target", bindTarget,
 		"-androidapi", strconv.Itoa(config.AndroidAPI),
 		"-javapkg=io.nekohasekai",
-		"-libname=box",
 	}
 
 	if !debugEnabled {
@@ -202,7 +201,6 @@ func buildApple() {
 		"bind",
 		"-v",
 		"-target", bindTarget,
-		"-libname=box",
 		"-tags-not-macos=with_low_memory",
 	}
 	//if !withTailscale {

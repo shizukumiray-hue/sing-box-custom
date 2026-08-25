@@ -61,6 +61,12 @@ jobs:
             "build-tools;37.0.1" \
             "platforms;android-37"
           
+          # CRITICAL: Prepend NDK r28 to PATH (highest priority)
+          # This ensures Go linker uses NDK r28 instead of pre-installed r27
+          export NDK_PATH="${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "${NDK_PATH}" >> $GITHUB_PATH
+          export PATH="${NDK_PATH}:${PATH}"
+          
           # Set environment for current step
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}"
           
@@ -71,6 +77,10 @@ jobs:
           echo "Verifying NDK installation..."
           ls -la ${ANDROID_NDK_HOME}
           echo "Using NDK: ${ANDROID_NDK_HOME}"
+          
+          # Verify clang points to NDK r28
+          echo "Verifying clang version..."
+          which aarch64-linux-android23-clang || echo "Clang not in PATH yet"
           
           echo "Installing gomobile from sagernet fork..."
           go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12

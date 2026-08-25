@@ -50,7 +50,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       
-      - name: Setup Android NDK
+      - name: Setup Android NDK and Gomobile
         run: |
           echo "Installing Android NDK ${{ env.NDK_VERSION }}..."
           
@@ -61,22 +61,25 @@ jobs:
             "build-tools;37.0.1" \
             "platforms;android-37"
           
-          # Set environment
+          # Set environment for current step
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}"
+          
+          # Set environment for future steps
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
           
-          # Verify installation
-          ls -la ${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}
-      
-      - name: Setup Gomobile
-        run: |
+          # Verify NDK installation
+          echo "Verifying NDK installation..."
+          ls -la ${ANDROID_NDK_HOME}
+          echo "Using NDK: ${ANDROID_NDK_HOME}"
+          
           echo "Installing gomobile from sagernet fork..."
           go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
           go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
           
-          echo "Initializing gomobile..."
-          gomobile init
+          echo "Initializing gomobile with NDK r28..."
+          gomobile init -ndk ${ANDROID_NDK_HOME}
           
-          echo "Verifying installation..."
+          echo "Verifying gomobile installation..."
           gomobile version || echo "gomobile version command not available"
           which gomobile
           which gobind

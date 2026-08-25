@@ -31,6 +31,8 @@ type Client struct {
 	headers             http.Header
 	maxEarlyData        uint32
 	earlyDataHeaderName string
+	customPayload       string
+	bugHost             string
 }
 
 func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, options option.V2RayWebsocketOptions, tlsConfig tls.Config) (adapter.V2RayClientTransport, error) {
@@ -70,6 +72,8 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
 		headers,
 		options.MaxEarlyData,
 		options.EarlyDataHeaderName,
+		options.CustomPayload,
+		options.BugHost,
 	}, nil
 }
 
@@ -85,6 +89,41 @@ func (c *Client) dialContext(ctx context.Context, requestURL *url.URL, headers h
 		deadlineConn = conn
 	}
 	deadlineConn.SetDeadline(time.Now().Add(C.TCPTimeout))
+	
+	// Custom payload injection
+	if c.customPayload != "" {
+		// Determine values for placeholders
+		bugHost := c.bugHost
+		if bugHost == "" {
+			bugHost = c.serverAddr.AddrString()
+		}
+		
+		userAgent := headers.Get("User-Agent")
+		if userAgent == "" {
+			userAgent = BuildDefaultUserAgent()
+		}
+		
+		// Parse and send custom payload
+		payloadParts := ParseCustomPayload(
+			c.customPayload,
+			bugHost,
+			c.serverAddr.AddrString(),
+			int(c.serverAddr.Port),
+			userAgent,
+		)
+		
+		err = SendCustomPayload(deadlineConn, payloadParts, 100*time.Millisecond)
+		if err != nil {
+			conn.Close()
+			return nil, E.Cause(err, "send custom payload")
+		}
+		
+		// Wait for server response and create WebsocketConn directly
+		deadlineConn.SetDeadline(time.Time{})
+		return NewConn(conn, nil, ws.StateClientSide), nil
+	}
+	
+	// Standard WebSocket handshake
 	var protocols []string
 	if protocolHeader := headers.Get("Sec-WebSocket-Protocol"); protocolHeader != "" {
 		protocols = []string{protocolHeader}

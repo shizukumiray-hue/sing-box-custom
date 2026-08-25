@@ -13,4 +13,6 @@ type SSHOutboundOptions struct {
 	HostKey              badoption.Listable[string] `json:"host_key,omitempty"`
 	HostKeyAlgorithms    badoption.Listable[string] `json:"host_key_algorithms,omitempty"`
 	ClientVersion        string                     `json:"client_version,omitempty"`
+	OutboundTLSOptionsContainer
+	Transport            *V2RayTransportOptions     `json:"transport,omitempty"`
 }

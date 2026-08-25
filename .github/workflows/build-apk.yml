@@ -1,0 +1,443 @@
+name: Build sing-box Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - 'feature/**'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'other'
+        type: choice
+        options:
+          - other
+          - play
+          - otherLegacy
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  GO_VERSION: '1.24.7'
+  NDK_VERSION: '28.0.13004108'
+  JAVA_VERSION: '17'
+
+jobs:
+  build-libbox:
+    name: Build libbox.aar
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version_code: ${{ steps.version.outputs.version_code }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      commit_hash: ${{ steps.version.outputs.commit_hash }}
+      build_date: ${{ steps.version.outputs.build_date }}
+    
+    steps:
+      - name: Checkout sing-box repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      
+      - name: Setup Gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+      
+      - name: Get version info
+        id: version
+        run: |
+          VERSION_CODE=$(date +%Y%m%d%H)
+          VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null || echo "dev-$(git rev-parse --short HEAD)")
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+          
+          echo "Version Code: $VERSION_CODE"
+          echo "Version Name: $VERSION_NAME"
+          echo "Commit Hash: $COMMIT_HASH"
+          echo "Build Date: $BUILD_DATE"
+      
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      
+      - name: Download Go dependencies
+        run: |
+          go mod download
+          go mod verify
+      
+      - name: Build libbox.aar
+        run: |
+          echo "Building libbox for Android..."
+          make lib_android
+          
+          # Verify build
+          if [ ! -f "experimental/libbox/libbox.aar" ]; then
+            echo "Error: libbox.aar not found!"
+            exit 1
+          fi
+          
+          # Get file info
+          ls -lh experimental/libbox/libbox.aar
+          unzip -l experimental/libbox/libbox.aar | head -20
+      
+      - name: Upload libbox.aar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbox-aar
+          path: experimental/libbox/libbox.aar
+          retention-days: 7
+
+  build-apk:
+    name: Build Android APK
+    needs: build-libbox
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: 
+          - ${{ github.event.inputs.build_type || 'other' }}
+        include:
+          - build_type: other
+            flavor: Other
+            min_api: 24
+          - build_type: play
+            flavor: Play
+            min_api: 24
+          - build_type: otherLegacy
+            flavor: OtherLegacy
+            min_api: 21
+    
+    steps:
+      - name: Checkout sing-box-for-android repo
+        uses: actions/checkout@v4
+        with:
+          repository: reF1nd/sing-box-for-android
+          ref: main
+          fetch-depth: 1
+      
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'gradle'
+      
+      - name: Setup Android NDK
+        run: |
+          echo "Installing Android NDK ${{ env.NDK_VERSION }}..."
+          
+          # Install via sdkmanager
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;${{ env.NDK_VERSION }}" \
+            "cmake;3.22.1" \
+            "build-tools;37.0.1" \
+            "platforms;android-37"
+          
+          # Set environment
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+          
+          # Verify installation
+          ls -la ${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}
+      
+      - name: Download libbox.aar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libbox-aar
+          path: app/libs/
+      
+      - name: Verify libbox.aar
+        run: |
+          ls -lh app/libs/libbox.aar
+          
+          # Create libs directory if needed
+          mkdir -p app/libs
+          
+          # Create libbox-legacy.aar (copy of libbox.aar for legacy build)
+          if [ "${{ matrix.build_type }}" == "otherLegacy" ]; then
+            cp app/libs/libbox.aar app/libs/libbox-legacy.aar
+            echo "Created libbox-legacy.aar for legacy build"
+          fi
+      
+      - name: Create version.properties
+        run: |
+          cat > version.properties << EOF
+          VERSION_CODE=${{ needs.build-libbox.outputs.version_code }}
+          VERSION_NAME=${{ needs.build-libbox.outputs.version_name }}
+          GO_VERSION=go${{ env.GO_VERSION }}
+          EOF
+          
+          cat version.properties
+      
+      - name: Create local.properties (dummy for CI)
+        run: |
+          cat > local.properties << EOF
+          sdk.dir=${ANDROID_HOME}
+          ndk.dir=${ANDROID_NDK_HOME}
+          EOF
+      
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.gradle/daemon
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      
+      - name: Build APK
+        run: |
+          echo "Building ${{ matrix.flavor }}Release APK..."
+          ./gradlew :app:assemble${{ matrix.flavor }}Release \
+            --no-daemon \
+            --stacktrace \
+            --info
+      
+      - name: List built APKs
+        run: |
+          echo "Built APKs:"
+          find app/build/outputs/apk -name "*.apk" -type f -exec ls -lh {} \;
+      
+      - name: Prepare APK artifacts
+        id: prepare_artifacts
+        run: |
+          # Create output directory
+          mkdir -p apk-output
+          
+          # Copy all APKs
+          find app/build/outputs/apk/${{ matrix.build_type }}/release -name "*.apk" \
+            -exec cp {} apk-output/ \;
+          
+          # Rename APKs with build info
+          cd apk-output
+          for apk in *.apk; do
+            if [ -f "$apk" ]; then
+              # Extract architecture from filename
+              if [[ $apk == *"arm64-v8a"* ]]; then
+                arch="arm64-v8a"
+              elif [[ $apk == *"armeabi-v7a"* ]]; then
+                arch="armeabi-v7a"
+              elif [[ $apk == *"x86_64"* ]]; then
+                arch="x86_64"
+              elif [[ $apk == *"x86"* ]]; then
+                arch="x86"
+              elif [[ $apk == *"universal"* ]]; then
+                arch="universal"
+              else
+                arch="unknown"
+              fi
+              
+              # New filename
+              new_name="SFA-${{ needs.build-libbox.outputs.version_name }}-${{ matrix.build_type }}-${arch}-${{ needs.build-libbox.outputs.commit_hash }}.apk"
+              mv "$apk" "$new_name"
+              echo "Renamed: $apk -> $new_name"
+            fi
+          done
+          
+          ls -lh
+      
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.build_type }}-${{ needs.build-libbox.outputs.commit_hash }}
+          path: apk-output/*.apk
+          retention-days: 30
+      
+      - name: Generate build info
+        run: |
+          cat > apk-output/build-info.txt << EOF
+          Build Information
+          ==================
+          
+          Version: ${{ needs.build-libbox.outputs.version_name }}
+          Version Code: ${{ needs.build-libbox.outputs.version_code }}
+          Commit: ${{ needs.build-libbox.outputs.commit_hash }}
+          Build Date: ${{ needs.build-libbox.outputs.build_date }}
+          Build Type: ${{ matrix.build_type }}
+          Min API Level: ${{ matrix.min_api }}
+          
+          sing-box Core Repository: ${{ github.repository }}
+          Android App Repository: reF1nd/sing-box-for-android
+          
+          Go Version: ${{ env.GO_VERSION }}
+          NDK Version: ${{ env.NDK_VERSION }}
+          Java Version: ${{ env.JAVA_VERSION }}
+          
+          GitHub Actions Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          
+          cat apk-output/build-info.txt
+      
+      - name: Upload build info
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-${{ matrix.build_type }}
+          path: apk-output/build-info.txt
+          retention-days: 30
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-libbox, build-apk]
+    runs-on: ubuntu-latest
+    if: |
+      (startsWith(github.ref, 'refs/tags/v') || 
+       github.event.inputs.create_release == 'true')
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Copy all APKs
+          find artifacts -name "*.apk" -exec cp {} release-assets/ \;
+          
+          # Copy build info
+          find artifacts -name "build-info.txt" -exec cp {} release-assets/ \; || true
+          
+          # List release assets
+          ls -lhR release-assets/
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || format('build-{0}', needs.build-libbox.outputs.commit_hash) }}
+          name: sing-box Android ${{ needs.build-libbox.outputs.version_name }}
+          body: |
+            ## sing-box Android APK
+            
+            **Version:** ${{ needs.build-libbox.outputs.version_name }}  
+            **Build Date:** ${{ needs.build-libbox.outputs.build_date }}  
+            **Commit:** ${{ needs.build-libbox.outputs.commit_hash }}
+            
+            ### Download
+            
+            #### Standard Build (Android 7.0+)
+            - **arm64-v8a** - Untuk device 64-bit ARM (kebanyakan device modern)
+            - **armeabi-v7a** - Untuk device 32-bit ARM
+            - **x86_64** - Untuk emulator/tablet x86 64-bit
+            - **x86** - Untuk emulator/tablet x86 32-bit
+            - **universal** - Support semua architecture (file lebih besar)
+            
+            #### Legacy Build (Android 5.0+)
+            - Untuk device lama yang masih menggunakan Android 5.x - 6.x
+            
+            ### Installation
+            
+            ```bash
+            # Download APK sesuai architecture device
+            # Install via adb
+            adb install SFA-*.apk
+            
+            # Atau copy ke device dan install manual
+            ```
+            
+            ### Changes
+            
+            - Custom sing-box core dengan SSH WebSocket payload
+            - Build dari commit: ${{ needs.build-libbox.outputs.commit_hash }}
+            
+            ### Build Info
+            
+            - Go version: ${{ env.GO_VERSION }}
+            - Android NDK: ${{ env.NDK_VERSION }}
+            - Java version: ${{ env.JAVA_VERSION }}
+            
+            ---
+            
+            **Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/commits/${{ needs.build-libbox.outputs.commit_hash }}
+          files: |
+            release-assets/*.apk
+            release-assets/build-info.txt
+          draft: false
+          prerelease: ${{ contains(needs.build-libbox.outputs.version_name, 'alpha') || contains(needs.build-libbox.outputs.version_name, 'beta') || contains(needs.build-libbox.outputs.version_name, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-completion:
+    name: Build Summary
+    needs: [build-libbox, build-apk]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Generate summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🚀 sing-box Android Build Summary
+          
+          ## Build Information
+          
+          | Property | Value |
+          |----------|-------|
+          | **Version** | ${{ needs.build-libbox.outputs.version_name }} |
+          | **Version Code** | ${{ needs.build-libbox.outputs.version_code }} |
+          | **Commit** | `${{ needs.build-libbox.outputs.commit_hash }}` |
+          | **Build Date** | ${{ needs.build-libbox.outputs.build_date }} |
+          
+          ## Build Status
+          
+          | Job | Status |
+          |-----|--------|
+          | Build libbox | ${{ needs.build-libbox.result }} |
+          | Build APK | ${{ needs.build-apk.result }} |
+          
+          ## Artifacts
+          
+          APK files telah tersedia di tab **Artifacts** di atas.
+          
+          ### Architecture Support
+          
+          - ✅ arm64-v8a (64-bit ARM)
+          - ✅ armeabi-v7a (32-bit ARM)
+          - ✅ x86_64 (64-bit x86)
+          - ✅ x86 (32-bit x86)
+          - ✅ universal (semua architecture)
+          
+          ---
+          
+          *Built with ❤️ by GitHub Actions*
+          EOF

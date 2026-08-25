@@ -1,0 +1,164 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  SING-BOX CUSTOM PAYLOAD - QUICK REFERENCE                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                           PLACEHOLDER SYNTAX                              ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║  [crlf]   → \r\n               Carriage Return + Line Feed               ║
+║  [lf]     → \n                 Line Feed only                            ║
+║  [cr]     → \r                 Carriage Return only                      ║
+║  [split]  → Packet Split       Send packet, wait 100ms, continue         ║
+║  [host]   → Real Server        Your actual SSH server hostname/IP        ║
+║  [port]   → Real Port          Your actual SSH server port               ║
+║  [proxy]  → Bug Host           SNI/Host for spoofing (from bug_host)     ║
+║  [ua]     → User-Agent         Browser User-Agent string                 ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                        QUICK START TEMPLATES                              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─ Simple GET ──────────────────────────────────────────────────────────────┐
+│ GET / HTTP/1.1[crlf]Host: [proxy][crlf]Upgrade: websocket[crlf]          │
+│ Connection: Upgrade[crlf][crlf]                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ DPI Bypass (Split) ──────────────────────────────────────────────────────┐
+│ GET / HTTP/1.1[crlf]Host: [proxy][crlf][crlf][split]                     │
+│ MKCOL /? HTTP/1.1[crlf]Host: [host][crlf]Connection: upgrade[crlf]       │
+│ Upgrade: websocket[crlf][crlf]                                            │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ Aggressive Split ────────────────────────────────────────────────────────┐
+│ GET / HTTP/1.1[crlf]Host: [proxy][crlf][crlf][split]                     │
+│ CONNECT [host]:[port] HTTP/1.1[crlf][crlf][split]                        │
+│ GET /ssh HTTP/1.1[crlf]Upgrade: websocket[crlf][crlf]                    │
+└───────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         OPERATOR CHEAT SHEET                              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─ AXIS / XL OPOK ──────────────────────────────────────────────────────────┐
+│ Bug Host:  edu.ruangguru.com                                              │
+│ Bug Host:  video.ruangguru.com                                            │
+│ Bug Host:  belajar.kemdikbud.go.id                                        │
+│ Port:      443 (TLS)                                                      │
+│ Method:    Split packet (aggressive)                                      │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ TELKOMSEL ───────────────────────────────────────────────────────────────┐
+│ Bug Host:  cdn.cloudflare.net                                             │
+│ Bug Host:  zaintest.vuclip.com                                            │
+│ Port:      80 atau 443                                                    │
+│ Method:    Simple GET                                                     │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ INDOSAT / IM3 ───────────────────────────────────────────────────────────┐
+│ Bug Host:  operamini.com                                                  │
+│ Bug Host:  speedtest.net                                                  │
+│ Port:      443 (TLS)                                                      │
+│ Method:    Standard split                                                 │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ TRI / 3 ─────────────────────────────────────────────────────────────────┐
+│ Bug Host:  zaintest.vuclip.com                                            │
+│ Bug Host:  v.whatsapp.net                                                 │
+│ Port:      443 (TLS)                                                      │
+│ Method:    Simple GET atau split                                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         MINIMAL CONFIG EXAMPLE                            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+{
+  "type": "ssh",
+  "server": "your-server.com",
+  "server_port": 443,
+  "user": "tunnel",
+  "password": "pass",
+  "tls": {
+    "enabled": true,
+    "server_name": "edu.ruangguru.com"
+  },
+  "transport": {
+    "type": "ws",
+    "path": "/",
+    "custom_payload": "YOUR_PAYLOAD_HERE",
+    "bug_host": "edu.ruangguru.com"
+  }
+}
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                            TROUBLESHOOTING                                ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─ Connection Timeout ──────────────────────────────────────────────────────┐
+│ ✓ Check bug_host sesuai dengan operator                                  │
+│ ✓ Coba ganti payload template                                            │
+│ ✓ Test dengan standard WS (tanpa custom_payload)                         │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ Bad Handshake ───────────────────────────────────────────────────────────┐
+│ ✓ Periksa format payload (typo di placeholder)                           │
+│ ✓ Pastikan [crlf] dan [split] benar                                      │
+│ ✓ Debug dengan tcpdump untuk lihat raw payload                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌─ Server Not Responding ───────────────────────────────────────────────────┐
+│ ✓ Pastikan SSH server support WebSocket                                  │
+│ ✓ Check firewall/iptables rules                                          │
+│ ✓ Verify TLS settings (server_name)                                      │
+└───────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                              COMMANDS                                     ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Build:          go build ./cmd/sing-box
+Run:            ./sing-box run -c config.json
+Debug:          ./sing-box run -c config.json -D /tmp/debug
+Test:           ./test-custom-payload.sh
+Capture:        sudo tcpdump -i any -A 'tcp port 443'
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                               FILES                                       ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+Documentation:     CUSTOM-PAYLOAD-README.md
+Implementation:    IMPLEMENTATION-SUMMARY.md
+Example Config:    example-ssh-custom-payload.json
+Test Script:       test-custom-payload.sh
+Quick Reference:   QUICK-REFERENCE.txt (this file)
+
+Modified Code:
+  • option/v2ray_transport.go
+  • transport/v2raywebsocket/client.go
+  • transport/v2raywebsocket/payload.go (NEW)
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                            TIPS & TRICKS                                  ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+1. Test payload di browser/curl dulu sebelum pakai di sing-box
+2. Gunakan [split] untuk operator dengan DPI ketat
+3. Bug host harus support HTTPS untuk bypass DPI
+4. Jangan gunakan custom_payload jika tidak perlu (overhead)
+5. Simpan backup payload yang bekerja untuk masing-masing operator
+6. Update bug host secara berkala (kadang provider block)
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                        BACKWARD COMPATIBILITY                             ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+✓ 100% backward compatible
+✓ Jika custom_payload kosong → standard WebSocket handshake
+✓ Tidak ada breaking changes
+✓ Existing config tetap berfungsi
+
+═══════════════════════════════════════════════════════════════════════════
+sing-box reF1nd fork - Custom Payload Feature
+Version: 2026.08.25 | go1.26.1 linux/amd64
+═══════════════════════════════════════════════════════════════════════════

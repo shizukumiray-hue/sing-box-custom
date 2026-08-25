@@ -1,0 +1,213 @@
+name: Build libbox.aar Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      go_version:
+        description: 'Go version to use'
+        required: false
+        default: '1.24.7'
+        type: string
+  workflow_call:
+    inputs:
+      go_version:
+        description: 'Go version to use'
+        required: false
+        default: '1.24.7'
+        type: string
+    outputs:
+      artifact_name:
+        description: 'Name of the uploaded artifact'
+        value: ${{ jobs.build.outputs.artifact_name }}
+      version_name:
+        description: 'Version name of the build'
+        value: ${{ jobs.build.outputs.version_name }}
+
+env:
+  GO_VERSION: ${{ inputs.go_version || '1.24.7' }}
+
+jobs:
+  build:
+    name: Build libbox.aar
+    runs-on: ubuntu-latest
+    
+    outputs:
+      artifact_name: libbox-aar-${{ steps.version.outputs.commit_hash }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      commit_hash: ${{ steps.version.outputs.commit_hash }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      
+      - name: Setup Gomobile
+        run: |
+          echo "Installing gomobile..."
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          
+          echo "Initializing gomobile..."
+          gomobile init
+          
+          echo "Verifying installation..."
+          gomobile version || echo "gomobile version command not available"
+          which gomobile
+          which gobind
+      
+      - name: Get version info
+        id: version
+        run: |
+          # Get version from git
+          if git describe --tags --exact-match 2>/dev/null; then
+            VERSION_NAME=$(git describe --tags --exact-match)
+          else
+            VERSION_NAME=$(git describe --tags --always --dirty 2>/dev/null || echo "dev-$(git rev-parse --short HEAD)")
+          fi
+          
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+          
+          echo "📦 Version Name: $VERSION_NAME"
+          echo "🔖 Commit Hash: $COMMIT_HASH"
+          echo "📅 Build Date: $BUILD_DATE"
+      
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-libbox-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-libbox-
+            ${{ runner.os }}-go-
+      
+      - name: Download dependencies
+        run: |
+          echo "Downloading Go modules..."
+          go mod download -x
+          
+          echo "Verifying modules..."
+          go mod verify
+      
+      - name: Build libbox.aar
+        run: |
+          echo "🔨 Building libbox.aar for Android..."
+          echo "Using Go version: $(go version)"
+          
+          # Run make command
+          make lib_android
+          
+          echo "✅ Build completed"
+      
+      - name: Verify build output
+        id: verify
+        run: |
+          LIBBOX_PATH="experimental/libbox/libbox.aar"
+          
+          if [ ! -f "$LIBBOX_PATH" ]; then
+            echo "❌ Error: libbox.aar not found at $LIBBOX_PATH"
+            echo "Searching for .aar files..."
+            find . -name "*.aar" -type f
+            exit 1
+          fi
+          
+          echo "✅ libbox.aar found"
+          
+          # Get file info
+          FILE_SIZE=$(stat -f%z "$LIBBOX_PATH" 2>/dev/null || stat -c%s "$LIBBOX_PATH")
+          FILE_SIZE_MB=$(echo "scale=2; $FILE_SIZE / 1024 / 1024" | bc)
+          
+          echo "📊 File size: ${FILE_SIZE_MB} MB"
+          ls -lh "$LIBBOX_PATH"
+          
+          # Check AAR contents
+          echo ""
+          echo "📦 AAR contents (first 30 entries):"
+          unzip -l "$LIBBOX_PATH" | head -30
+          
+          # Check for required architectures
+          echo ""
+          echo "🏗️ Checking architectures..."
+          unzip -l "$LIBBOX_PATH" | grep -E "jni/(arm64-v8a|armeabi-v7a|x86_64|x86)/" | head -20 || true
+          
+          echo "file_size_mb=${FILE_SIZE_MB}" >> $GITHUB_OUTPUT
+      
+      - name: Upload libbox.aar
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbox-aar-${{ steps.version.outputs.commit_hash }}
+          path: experimental/libbox/libbox.aar
+          retention-days: 14
+          compression-level: 0  # AAR already compressed
+      
+      - name: Generate build metadata
+        run: |
+          cat > libbox-metadata.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version_name }}",
+            "commit": "${{ steps.version.outputs.commit_hash }}",
+            "build_date": "${{ steps.version.outputs.build_date }}",
+            "go_version": "${{ env.GO_VERSION }}",
+            "file_size_mb": "${{ steps.verify.outputs.file_size_mb }}",
+            "repository": "${{ github.repository }}",
+            "workflow_run": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+          
+          cat libbox-metadata.json
+      
+      - name: Upload metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: libbox-metadata-${{ steps.version.outputs.commit_hash }}
+          path: libbox-metadata.json
+          retention-days: 14
+      
+      - name: Build summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📦 libbox.aar Build Complete
+          
+          ## Build Information
+          
+          | Property | Value |
+          |----------|-------|
+          | **Version** | ${{ steps.version.outputs.version_name }} |
+          | **Commit** | `${{ steps.version.outputs.commit_hash }}` |
+          | **Build Date** | ${{ steps.version.outputs.build_date }} |
+          | **Go Version** | ${{ env.GO_VERSION }} |
+          | **File Size** | ${{ steps.verify.outputs.file_size_mb }} MB |
+          
+          ## Artifacts
+          
+          - ✅ `libbox.aar` - Ready untuk digunakan di Android app
+          - 📋 `libbox-metadata.json` - Build metadata
+          
+          ## Usage
+          
+          Download artifact dan copy ke `sing-box-for-android/app/libs/`:
+          
+          ```bash
+          # Download dari GitHub Actions artifacts
+          # Kemudian copy ke project Android
+          cp libbox.aar sing-box-for-android/app/libs/
+          ```
+          
+          ---
+          
+          *Built with 🚀 GitHub Actions*
+          EOF

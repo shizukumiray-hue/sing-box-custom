@@ -55,7 +55,6 @@ var (
 
 func init() {
 	sharedFlags = append(sharedFlags, "-trimpath")
-	sharedFlags = append(sharedFlags, "-buildvcs=false")
 	currentTag, err := build_shared.ReadTag()
 	if err != nil {
 		currentTag = "unknown"

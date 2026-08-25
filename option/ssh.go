@@ -16,4 +16,6 @@ type SSHOutboundOptions struct {
 	Cipher               badoption.Listable[string] `json:"cipher,omitempty"`
 	MAC                  badoption.Listable[string] `json:"mac,omitempty"`
 	KexAlgorithm         badoption.Listable[string] `json:"kex_algorithm,omitempty"`
+	OutboundTLSOptionsContainer
+	Transport            *V2RayTransportOptions     `json:"transport,omitempty"`
 }

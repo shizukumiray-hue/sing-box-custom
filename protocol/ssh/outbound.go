@@ -15,15 +15,16 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/transport/v2ray"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/service/filemanager"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -36,17 +37,18 @@ var _ adapter.InterfaceUpdateListener = (*Outbound)(nil)
 
 type Outbound struct {
 	outbound.Adapter
+	ctx               context.Context
 	logger            logger.ContextLogger
 	dialer            N.Dialer
 	serverAddr        M.Socksaddr
 	user              string
 	hostKey           []ssh.PublicKey
 	hostKeyAlgorithms []string
-	cipher            []string
-	mac               []string
-	kexAlgorithm      []string
 	clientVersion     string
 	authMethod        []ssh.AuthMethod
+	tlsConfig         tls.Config
+	tlsDialer         tls.Dialer
+	transport         adapter.V2RayClientTransport
 	clientAccess      sync.Mutex
 	clientConn        net.Conn
 	client            *ssh.Client
@@ -59,14 +61,12 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 	outbound := &Outbound{
 		Adapter:           outbound.NewAdapterWithDialerOptions(C.TypeSSH, tag, []string{N.NetworkTCP}, options.DialerOptions),
+		ctx:               ctx,
 		logger:            logger,
 		dialer:            outboundDialer,
 		serverAddr:        options.ServerOptions.Build(),
 		user:              options.User,
 		hostKeyAlgorithms: options.HostKeyAlgorithms,
-		cipher:            options.Cipher,
-		mac:               options.MAC,
-		kexAlgorithm:      options.KexAlgorithm,
 		clientVersion:     options.ClientVersion,
 	}
 	if outbound.serverAddr.Port == 0 {
@@ -78,6 +78,24 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if outbound.clientVersion == "" {
 		outbound.clientVersion = randomVersion()
 	}
+	// TLS support
+	if options.TLS != nil {
+		outbound.tlsConfig, err = tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
+		if err != nil {
+			return nil, err
+		}
+		if outbound.tlsConfig != nil {
+			outbound.tlsDialer = tls.NewDialer(outboundDialer, outbound.tlsConfig)
+		}
+	}
+	// Transport support
+	if options.Transport != nil {
+		outbound.transport, err = v2ray.NewClientTransport(ctx, outbound.dialer, outbound.serverAddr,
+			common.PtrValueOrDefault(options.Transport), outbound.tlsConfig)
+		if err != nil {
+			return nil, E.Cause(err, "create client transport: ", options.Transport.Type)
+		}
+	}
 	if options.Password != "" {
 		outbound.authMethod = append(outbound.authMethod, ssh.Password(options.Password))
 	}
@@ -87,7 +105,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			privateKey = []byte(strings.Join(options.PrivateKey, "\n"))
 		} else {
 			var err error
-			privateKey, err = filemanager.ReadFile(ctx, os.ExpandEnv(options.PrivateKeyPath))
+			privateKey, err = os.ReadFile(os.ExpandEnv(options.PrivateKeyPath))
 			if err != nil {
 				return nil, E.Cause(err, "read private key")
 			}
@@ -126,7 +144,7 @@ func randomVersion() string {
 	return version
 }
 
-func (s *Outbound) connect(ctx context.Context) (client *ssh.Client, err error) {
+func (s *Outbound) connect(ctx context.Context) (*ssh.Client, error) {
 	if s.client != nil {
 		return s.client, nil
 	}
@@ -138,24 +156,25 @@ func (s *Outbound) connect(ctx context.Context) (client *ssh.Client, err error) 
 		return s.client, nil
 	}
 
-	conn, err := s.dialer.DialContext(ctx, N.NetworkTCP, s.serverAddr)
+	// Connection with transport support
+	var conn net.Conn
+	var err error
+
+	if s.transport != nil {
+		// Use WebSocket or other V2Ray transport
+		conn, err = s.transport.DialContext(ctx)
+	} else if s.tlsDialer != nil {
+		// Use TLS without transport
+		conn, err = s.tlsDialer.DialTLSContext(ctx, s.serverAddr)
+	} else {
+		// Direct TCP connection (existing behavior)
+		conn, err = s.dialer.DialContext(ctx, N.NetworkTCP, s.serverAddr)
+	}
+
 	if err != nil {
 		return nil, err
 	}
-	if ctx.Done() != nil {
-		handshakeConn := conn
-		stopContext := context.AfterFunc(ctx, func() {
-			_ = handshakeConn.Close()
-		})
-		defer func() {
-			if !stopContext() {
-				s.client = nil
-				s.clientConn = nil
-				client = nil
-				err = ctx.Err()
-			}
-		}()
-	}
+
 	config := &ssh.ClientConfig{
 		User:              s.user,
 		Auth:              s.authMethod,
@@ -165,31 +184,23 @@ func (s *Outbound) connect(ctx context.Context) (client *ssh.Client, err error) 
 			if len(s.hostKey) == 0 {
 				return nil
 			}
-			serverKey := key.Marshal()
+			serverKeyRaw := key.Marshal()
 			for _, hostKey := range s.hostKey {
-				if bytes.Equal(serverKey, hostKey.Marshal()) {
+				if bytes.Equal(serverKeyRaw, hostKey.Marshal()) {
 					return nil
 				}
 			}
-			return E.New("host key mismatch, server send ", key.Type(), " ", base64.StdEncoding.EncodeToString(serverKey))
+			return E.New("host key mismatch, server send ", key.Type(), " ", base64.StdEncoding.EncodeToString(serverKeyRaw))
 		},
 	}
-	if len(s.cipher) > 0 {
-		config.Ciphers = s.cipher
-	}
-	if len(s.mac) > 0 {
-		config.MACs = s.mac
-	}
-	if len(s.kexAlgorithm) > 0 {
-		config.KeyExchanges = s.kexAlgorithm
-	}
+
 	clientConn, chans, reqs, err := ssh.NewClientConn(conn, s.serverAddr.Addr.String(), config)
 	if err != nil {
 		conn.Close()
 		return nil, E.Cause(err, "connect to ssh server")
 	}
 
-	client = ssh.NewClient(clientConn, chans, reqs)
+	client := ssh.NewClient(clientConn, chans, reqs)
 
 	s.clientConn = conn
 	s.client = client
@@ -206,27 +217,56 @@ func (s *Outbound) connect(ctx context.Context) (client *ssh.Client, err error) 
 	return client, nil
 }
 
-func (s *Outbound) InterfaceUpdated(ctx context.Context) {
-	common.Close(s.clientConn)
+func (s *Outbound) InterfaceUpdated() {
+	s.clientAccess.Lock()
+	transport := s.transport
+	conn := s.clientConn
+	s.client = nil
+	s.clientConn = nil
+	s.clientAccess.Unlock()
+	
+	if transport != nil {
+		transport.Close()
+	}
+	common.Close(conn)
 }
 
 func (s *Outbound) Close() error {
-	return common.Close(s.clientConn)
+	s.clientAccess.Lock()
+	transport := s.transport
+	conn := s.clientConn
+	s.client = nil
+	s.clientConn = nil
+	s.clientAccess.Unlock()
+	
+	return common.Close(transport, conn)
 }
 
 func (s *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	ctx, metadata := adapter.ExtendContext(ctx)
+	metadata.Outbound = s.Tag()
+	metadata.Destination = destination
+	
+	switch N.NetworkName(network) {
+	case N.NetworkTCP:
+		s.logger.InfoContext(ctx, "outbound connection to ", destination)
+	}
+	
 	client, err := s.connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	conn, err := client.Dial(network, destination.String())
 	if err != nil {
-		return nil, err
+		return nil, E.Cause(err, "dial through ssh")
 	}
 	return &chanConnWrapper{Conn: conn}, nil
 }
 
 func (s *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	_, metadata := adapter.ExtendContext(ctx)
+	metadata.Outbound = s.Tag()
+	metadata.Destination = destination
 	return nil, os.ErrInvalid
 }
 

@@ -143,27 +143,52 @@ jobs:
           make lib_android
           
           echo "✅ Build completed"
+          
+          # Find and list all .aar files
+          echo "Searching for .aar files..."
+          find . -name "*.aar" -type f
       
       - name: Verify build output
         id: verify
         run: |
-          LIBBOX_PATH="experimental/libbox/libbox.aar"
+          echo "Searching for all .aar files..."
+          find . -name "*.aar" -type f
           
-          if [ ! -f "$LIBBOX_PATH" ]; then
-            echo "❌ Error: libbox.aar not found at $LIBBOX_PATH"
-            echo "Searching for .aar files..."
-            find . -name "*.aar" -type f
+          # Try multiple possible locations
+          POSSIBLE_PATHS=(
+            "libbox.aar"
+            "experimental/libbox/libbox.aar"
+            "build/libbox.aar"
+            "./libbox.aar"
+          )
+          
+          LIBBOX_PATH=""
+          for path in "${POSSIBLE_PATHS[@]}"; do
+            if [ -f "$path" ]; then
+              LIBBOX_PATH="$path"
+              echo "✅ Found libbox.aar at: $path"
+              break
+            fi
+          done
+          
+          if [ -z "$LIBBOX_PATH" ]; then
+            echo "❌ Error: libbox.aar not found in any expected location"
             exit 1
           fi
           
-          echo "✅ libbox.aar found"
+          # Move to expected location if needed
+          mkdir -p experimental/libbox
+          if [ "$LIBBOX_PATH" != "experimental/libbox/libbox.aar" ]; then
+            echo "Moving $LIBBOX_PATH to experimental/libbox/libbox.aar"
+            cp "$LIBBOX_PATH" experimental/libbox/libbox.aar
+          fi
           
           # Get file info
-          FILE_SIZE=$(stat -f%z "$LIBBOX_PATH" 2>/dev/null || stat -c%s "$LIBBOX_PATH")
+          FILE_SIZE=$(stat -c%s "experimental/libbox/libbox.aar")
           FILE_SIZE_MB=$(echo "scale=2; $FILE_SIZE / 1024 / 1024" | bc)
           
           echo "📊 File size: ${FILE_SIZE_MB} MB"
-          ls -lh "$LIBBOX_PATH"
+          ls -lh experimental/libbox/libbox.aar
           
           # Check AAR contents
           echo ""

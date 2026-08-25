@@ -51,9 +51,9 @@ jobs:
       
       - name: Setup Gomobile
         run: |
-          echo "Installing gomobile..."
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "Installing gomobile from sagernet fork..."
+          go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
+          go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
           
           echo "Initializing gomobile..."
           gomobile init
